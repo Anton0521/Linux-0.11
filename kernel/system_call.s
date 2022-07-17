@@ -28,11 +28,19 @@
  *	24(%esp) - %eflags
  *	28(%esp) - %oldesp
  *	2C(%esp) - %oldss
+ *
+ * system_call.s 文件包含系统调用(system-call)底层处理子程序。由于有些代码比较类似，所以
+ * 同时也包括时钟中断处理(timer-interrupt)句柄。硬盘和软盘的中断处理程序也在这里。
+ *
+ * 注意：这段代码处理信号(signal)识别，在每次时钟中断和系统调用之后都会进行识别。一般
+ * 中断信号并不处理信号识别，因为会给系统造成混乱。
+ *
+ * 从系统调用返回'ret_from_system_call'时堆栈的内容,見19~30行.
  */
 
 SIG_CHLD	= 17
 
-EAX		= 0x00
+EAX		= 0x00					# 堆栈中各个寄存器的偏移位置。
 EBX		= 0x04
 ECX		= 0x08
 EDX		= 0x0C
@@ -68,57 +76,57 @@ nr_system_calls = 72
 .globl _hd_interrupt,_floppy_interrupt,_parallel_interrupt
 .globl _device_not_available, _coprocessor_error
 
+.align 2 								# 内存2字节对齐
+bad_sys_call: 							# 错误的系统调用号
+	movl $-1,%eax 						# eax中置-1
+	iret 								# 退出中断
 .align 2
-bad_sys_call:
-	movl $-1,%eax
-	iret
-.align 2
-reschedule:
-	pushl $ret_from_sys_call
+reschedule: 							# 重新执行调度程序入口,调度程序schedule在(kernel/sched.c).
+	pushl $ret_from_sys_call 			# 将ret_from_sys_call的地址入栈
 	jmp _schedule
 .align 2
-_system_call:
-	cmpl $nr_system_calls-1,%eax
-	ja bad_sys_call
-	push %ds
-	push %es
-	push %fs
+_system_call: 							# linux系统调用入口(调用中断int 0x80，eax中是调用号)
+	cmpl $nr_system_calls-1,%eax 		# 检测调用号eax是否超出范围
+	ja bad_sys_call 					# 超出范围,返回-1,退出中断
+	push %ds 							
+	push %es 							
+	push %fs 							
 	pushl %edx
-	pushl %ecx		# push %ebx,%ecx,%edx as parameters
-	pushl %ebx		# to the system call
-	movl $0x10,%edx		# set up ds,es to kernel space
-	mov %dx,%ds
+	pushl %ecx							# push %ebx,%ecx,%edx as parameters to the system call
+	pushl %ebx							# 将系统调用参数入栈, 其中ebx,ecx,edx对应函数参数0,1,2
+	movl $0x10,%edx		
+	mov %dx,%ds							# set up ds,es to kernel space. ds,es指向内核数据段(全局描述符表中数据段描述符)
 	mov %dx,%es
-	movl $0x17,%edx		# fs points to local data space
-	mov %dx,%fs
-	call _sys_call_table(,%eax,4)
-	pushl %eax
-	movl _current,%eax
-	cmpl $0,state(%eax)		# state
-	jne reschedule
-	cmpl $0,counter(%eax)		# counter
-	je reschedule
-ret_from_sys_call:
-	movl _current,%eax		# task[0] cannot have signals
-	cmpl _task,%eax
-	je 3f
-	cmpw $0x0f,CS(%esp)		# was old code segment supervisor ?
-	jne 3f
-	cmpw $0x17,OLDSS(%esp)		# was stack segment = 0x17 ?
-	jne 3f
-	movl signal(%eax),%ebx
-	movl blocked(%eax),%ecx
-	notl %ecx
-	andl %ebx,%ecx
-	bsfl %ecx,%ecx
-	je 3f
-	btrl %ecx,%ebx
-	movl %ebx,signal(%eax)
-	incl %ecx
-	pushl %ecx
-	call _do_signal
-	popl %eax
-3:	popl %eax
+	movl $0x17,%edx	
+	mov %dx,%fs							# fs points to local data space. fs指向局部数据段(局部描述符表中数据段描述符)
+	call _sys_call_table(,%eax,4)		# call_addr = _sys_call_table + %eax * 4, 其中sys_call_table在(include/linux/sys.h),(call -> pushl %eip| movl call_addr %eip)
+	pushl %eax							# 把系统调用号入栈
+	movl _current,%eax					# 取当前进程数据结构地址
+	cmpl $0,state(%eax)					# 查看当前任务的运行状态
+	jne reschedule						# 如果当前任务不在就绪状态"[%eax + state] != $0"，执行调度程序(跳转到reschedule)
+	cmpl $0,counter(%eax)				# 如果当前任务在就绪状态，查看时间片是否用完
+	je reschedule						# 如果时间片已用完“[%eax + counter] = $0”, 则也执行调度程序(跳转到reschedule)
+ret_from_sys_call:						# 从系统调用C函数返回后，对信号进行识别处理
+	movl _current,%eax					# task[0] cannot have signals
+	cmpl _task,%eax						# 判断当前任务是否是初始任务task0
+	je 3f								# 如果是，则不比对其进行信号量方面的处理，直接返回(向前[forward]跳到标号3)。
+	cmpw $0x0f,CS(%esp)					# was old code segment supervisor ?  判断调用程序是否为用户任务(内核态执行时不可抢占)。
+	jne 3f								# 如果不是(说明某个中断服务程序跳转到上面的)，则直接退出中断。
+	cmpw $0x17,OLDSS(%esp)				# was stack segment = 0x17 ?  判断原堆栈是否在用户段中
+	jne 3f								# 如果不是(说明系统调用的调用者不是用户任务），则也退出。
+	movl signal(%eax),%ebx				# 取信号位图"[%eax + signal] → ebx",每1位代表1种信号，共32个信号
+	movl blocked(%eax),%ecx				# 取阻塞(屏蔽)信号位图"[%eax + blocked] → ecx"
+	notl %ecx							# 每位取反
+	andl %ebx,%ecx						# 获得许可信号位图
+	bsfl %ecx,%ecx						# 从低位(位0)开始扫描位图，看是否有1的位，若有，则ecx保留该位的偏移值
+	je 3f								# 如果没有信号则向前跳转退出
+	btrl %ecx,%ebx						# 复位该信号(ebx含有原signal位图)
+	movl %ebx,signal(%eax)				# 重新保存signal位图信息→current->signal.
+	incl %ecx							# 将信号调整为从1开始的数(1-32)
+	pushl %ecx							# 信号值入栈作为调用do_signal的参数之一
+	call _do_signal						# 调用C函数信号处理程序(kernel/signal.c)
+	popl %eax							# 弹出入栈的信号值
+3:	popl %eax							# eax中含有上面入栈系统调用的返回值
 	popl %ebx
 	popl %ecx
 	popl %edx

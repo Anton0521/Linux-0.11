@@ -134,11 +134,11 @@
 type name(void) \
 { \
 long __res; \
-__asm__ volatile ("int $0x80" \
-	: "=a" (__res) \
-	: "0" (__NR_##name)); \
-if (__res >= 0) \
-	return (type) __res; \
+__asm__ volatile ("int $0x80" 		/* 指令部:调用系统中断0x80,进入中段响应函数_system_call。*/ \
+	: "=a" (__res) 					/* 输出部:%0 - eax(__res) */ \
+	: "0" (__NR_##name)); 			/* 输入部:%1 - eax(__NR_##name) */ \
+if (__res >= 0) 					/* 如果返回值大于等于0，则返回该值 */ \
+	return (type) __res; 			/* 否则置出错号errno，并返回-1 */ \
 errno = -__res; \
 return -1; \
 }
@@ -147,9 +147,9 @@ return -1; \
 type name(atype a) \
 { \
 long __res; \
-__asm__ volatile ("int $0x80" \
-	: "=a" (__res) \
-	: "0" (__NR_##name),"b" ((long)(a))); \
+__asm__ volatile ("int $0x80" 				/* 指令部:调用系统中断0x80。*/ \
+	: "=a" (__res) 							/* 输出部:%0 - eax(__res) */ \
+	: "0" (__NR_##name),"b" ((long)(a))); 	/* 輸入部:%1 - eax(__NR_##name), %2 - ebx(a) */ \
 if (__res >= 0) \
 	return (type) __res; \
 errno = -__res; \
@@ -160,9 +160,9 @@ return -1; \
 type name(atype a,btype b) \
 { \
 long __res; \
-__asm__ volatile ("int $0x80" \
-	: "=a" (__res) \
-	: "0" (__NR_##name),"b" ((long)(a)),"c" ((long)(b))); \
+__asm__ volatile ("int $0x80" 								/* 指令部:调用系统中断0x80。*/ \
+	: "=a" (__res) 											/* 输出部:%0 - eax(__res) */ \
+	: "0" (__NR_##name),"b" ((long)(a)),"c" ((long)(b))); 	/* 輸入部:%1 - eax(__NR_##name), %2 - ebx(a), %3 - ecx(b) */ \
 if (__res >= 0) \
 	return (type) __res; \
 errno = -__res; \
@@ -173,9 +173,9 @@ return -1; \
 type name(atype a,btype b,ctype c) \
 { \
 long __res; \
-__asm__ volatile ("int $0x80" \
-	: "=a" (__res) \
-	: "0" (__NR_##name),"b" ((long)(a)),"c" ((long)(b)),"d" ((long)(c))); \
+__asm__ volatile ("int $0x80" 												/* 指令部:调用系统中断0x80。*/ \
+	: "=a" (__res) 															/* 输出部:%0 - eax(__res) */ \
+	: "0" (__NR_##name),"b" ((long)(a)),"c" ((long)(b)),"d" ((long)(c))); 	/* 輸入部:%1 - eax(__NR_##name), %2 - ebx(a), %3 - ecx(b), %4 - edx(c) */ \
 if (__res>=0) \
 	return (type) __res; \
 errno=-__res; \
